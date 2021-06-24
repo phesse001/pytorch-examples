@@ -6,47 +6,51 @@ import torch.optim as optim
 from torch.distributions import Categorical
 import numpy as np
 
-NUM_EPISODES = 1000
+# Based of example given in pytorch docs -> https://github.com/pytorch/examples/blob/master/reinforcement_learning/reinforce.py
+
+NUM_EPISODES = 10000
 GAMMA = 0.99
+LR = .001
 
 class Policy(nn.Module):
-	def __init__(self, input_dim, output_dim, lr):
+	def __init__(self, input_dim, fc_dim, output_dim):
 		# super allows us to call superclass methods (i.e nn.Module methods)
-		super(self, Policy).__init__()
+		super(Policy, self).__init__()
 		self.input_dim = input_dim
-		self.output_dim	 = fc_dim
-		self.fc1 = nn.Linear(self.input_dim, self.output_dim)
-		self.optimizer = optim.Adam(self.parameters(), lr)
-		self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-		self.to(self.device)
+		self.output_dim	 = output_dim
+		self.fc_dim = fc_dim
+		self.fc1 = nn.Linear(self.input_dim, self.fc_dim)
+		self.fc2 = nn.Linear(self.fc_dim, self.output_dim)
+		self.optimizer = optim.Adam(self.parameters(), LR)
+		self.saved_log_probs = []
+		self.rewards = []
 		
 	def forward(self, x):
-		x= F.softmax(self.fc1(x))
+		x = self.fc1(x)
+		x = F.softmax(self.fc2(x))
 		return x
 
 # Main training loop
 env = gym.make('CartPole-v0')
-action_space = env.action_space.n
 
-policy = Policy(32, 2, .001)
+policy = Policy(4, 128, 2)
+eps = np.finfo(np.float32).eps.item()
+running_reward = 10
 
 for i in range(NUM_EPISODES):
 	state = env.reset()
 	# convert to tensor
-	state = torch.from_numpy(state, dtype=np.float32)
+	score = 0
 	rewards = []
 	log_probs = []
-		
-	score = 0
-
 	# Loop forever until episode terminates
 	while True:
-
+		state = torch.from_numpy(state).float().unsqueeze(0) # have to add extra dim for some reason
 		probs = policy.forward(state)
 		m = Categorical(probs)
 		action = m.sample() # samples from probability distribution
-		next_state, reward, done, info = env.step(action)
-		logp = m.log_probs(action)
+		state, reward, done, info = env.step(action.item())
+		logp = m.log_prob(action)
 		log_probs.append(logp)
 		rewards.append(reward)
 		score += reward
@@ -54,7 +58,11 @@ for i in range(NUM_EPISODES):
 		if done:
 			break
 
-  # At the end of every episode, update weights (monte-carlo method)
+	running_reward = 0.05 * score + (1 - 0.05) * running_reward
+	if i % 10 == 0:
+		print(f"episode: {i} average reward: {running_reward}")
+
+    # At the end of every episode, update weights (monte-carlo method)
 	# accumulate sum of discounted rewards by going backwards and inserting at start
 	R = 0
 	policy_loss = []
@@ -64,8 +72,8 @@ for i in range(NUM_EPISODES):
 		returns.insert(0, R)
 
 	returns = torch.tensor(returns)
-	# in example they have normalization term, I will use it if I have to
-	# returns = (returns - returns.mean() / returns.std() + eps)
+	#returns = (returns - returns.mean()) / (returns.std() + eps)
+
 	for log_prob, R in zip(log_probs, returns):
 		policy_loss.append(-log_prob * R) 
 	
